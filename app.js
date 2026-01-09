@@ -9,6 +9,9 @@ const FRICTION = 0.92
 const RESTITUTION = 0.3
 const STOP_EPS = 0.02
 const NEAR = 0.1
+const SNAP_VEL_Y = 0.01
+const SNAP_VEL_XZ = 0.02
+const SNAP_ANGLE = 0.05
 
 game.width = 800
 game.height = 800
@@ -313,6 +316,30 @@ function add_ground(){
     })
 }
 
+function align_normal_to_up(f, normal){
+    const up = {x:0, y:1, z:0}
+
+    if(!normal) return
+
+    const speed = Math.hypot(f.vel.x, f.vel.y, f.vel.z)
+    const weight = Math.min(1, 0.1 + 0.9 * (1 - speed / 0.05))
+
+    const axis = cross(normal, up)
+    const len = Math.hypot(axis.x, axis.y, axis.z)
+    if(len < 1e-5) return
+    axis.x /= len
+    axis.y /= len
+    axis.z /= len
+
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot(normal, up))))
+    const step = Math.min(angle, SNAP_ANGLE) * weight
+
+    f.ang = f.ang || {x:0, y:0, z:0}
+    f.ang.x += axis.x * step
+    f.ang.y += axis.y * step
+    f.ang.z += axis.z * step
+}
+
 function physics_step(){
     for(const f of figures){
         if(!isFinite(f.mass)) continue
@@ -324,26 +351,72 @@ function physics_step(){
         f.center.z += f.vel.z
 
         const sphereBottomY = f.center.y - f.radius
-        
+
         if(sphereBottomY < GROUND_Y){
             const penetration = GROUND_Y - sphereBottomY
-            
             f.center.y += penetration
-            
+
             if(f.vel.y < 0){
-                f.vel.y *= -RESTITUTION
+                if(Math.abs(f.vel.y) < STOP_EPS) f.vel.y = 0
+                else f.vel.y *= -RESTITUTION
             }
-            
-            if(Math.abs(f.vel.y) < STOP_EPS) f.vel.y = 0
-            
+
             f.vel.x *= FRICTION
             f.vel.z *= FRICTION
-            
+
             if(f.radius > 0){
                 const rollSpeed = 0.8
-                f.ang = f.ang || {x:0, y:0, z:0}
+                f.ang = f.ang || {x:0,y:0,z:0}
                 f.ang.x += rollSpeed * f.vel.z / f.radius
                 f.ang.z -= rollSpeed * f.vel.x / f.radius
+            }
+
+            const slowY = Math.abs(f.vel.y) < SNAP_VEL_Y
+            const slowXZ = Math.hypot(f.vel.x, f.vel.z) < SNAP_VEL_XZ
+
+            if(slowY && slowXZ){
+                let bestNormal = null
+                let bestDot = -Infinity
+
+                for(const face of f.faces){
+                    let a = f.vs[face.indices[0]]
+                    let b = f.vs[face.indices[1]]
+                    let c = f.vs[face.indices[2]]
+
+                    if(f.ang){
+                        const rot = v => {
+                            v = rotate_xz(v, f.ang.y)
+                            v = rotate_yz(v, f.ang.x)
+                            const c0 = Math.cos(f.ang.z), s0 = Math.sin(f.ang.z)
+                            return {
+                                x: v.x*c0 - v.y*s0,
+                                y: v.x*s0 + v.y*c0,
+                                z: v.z
+                            }
+                        }
+                        a = rot(a)
+                        b = rot(b)
+                        c = rot(c)
+                    }
+
+                    const n = normalize(cross(sub(b,a), sub(c,a)))
+
+                    if(n.y > bestDot){
+                        bestDot = n.y
+                        bestNormal = n
+                    }
+                }
+
+                if(Math.hypot(f.vel.x, f.vel.z) < 0.005){
+                    f.vel.x = 0
+                    f.vel.z = 0
+                }
+
+                align_normal_to_up(f, bestNormal)
+
+                f.vel.y = 0
+                f.vel.x *= 0.9
+                f.vel.z *= 0.9
             }
         }
     }
